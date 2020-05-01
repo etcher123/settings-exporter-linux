@@ -1,0 +1,129 @@
+#!/bin/bash
+# -*- mode: sh; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim: et sts=4 sw=4
+
+# SPDX-License-Identifier: LGPL-2.1+
+# Copyright © 2020 Collabora Ltd. <arnaud.rebillout@collabora.com>
+
+set -e
+set -u
+
+OUTDIR=    # -o
+
+
+## usage
+
+USAGE="\
+Usage: ${0##*/} [-o OUTPUT_DIR]"
+
+usage() {
+    local status=${1:-2}
+
+    if [ $status -eq 0 ]; then
+        echo "$USAGE"
+    else
+        echo >&2 "$USAGE"
+    fi
+
+    exit $status
+}
+
+
+## helpers
+
+export_user_settings() {
+    local buf=
+    local val=
+    local val2=
+    local settings=()
+
+    val=$(timedatectl show --property Timezone --value)
+    settings+=("TZ='$val'")
+
+    buf=$(localectl status)
+    val=$(echo "$buf" | sed -n 's/ *System Locale: //p')
+    settings+=("LOCALE='$val'")
+    val=$(echo "$buf" | sed -n 's/ *X11 Layout: //p')
+    val2=$(echo "$buf" | sed -n 's/ *X11 Variant: //p')
+    if [ "$val2" ]; then
+        settings+=("KEYBOARD='$val:$val2'")
+    else
+        settings+=("KEYBOARD='$val'")
+    fi
+
+    if [ "$OUTDIR" ]; then
+        mkdir -p "$OUTDIR/"
+        printf '%s\n' "${settings[@]}" > "$OUTDIR/settings.conf"
+    else
+        echo "# settings.conf"
+        printf '%s\n' "${settings[@]}"
+    fi
+}
+
+export_wifi_settings_nmcli() {
+    local name=
+    local uuid=
+    local type=
+    local device=
+    local wifi_name=
+    local file=
+
+    while IFS=: read -r name uuid type device; do
+        if [ "$type" = "802-11-wireless" ]; then
+            wifi_name=$name
+            break
+        fi
+    done < <(nmcli --terse connection show --active)
+
+    if [ -z "$wifi_name" ]; then
+        return
+    fi
+
+    file="/etc/NetworkManager/system-connections/${wifi_name}.nmconnection"
+    if ! [ -e "$file" ]; then
+        file="/etc/NetworkManager/system-connections/${wifi_name}"
+        if ! [ -e "$file" ]; then
+            echo >&2 "nmconnection file not found for wifi name '$wifi_name'"
+            return
+        fi
+    fi
+
+    if [ "$OUTDIR" ]; then
+        mkdir -p "$OUTDIR/network-connections"
+        if [ -r "$file" ]; then
+            cp "$file" "$OUTDIR/network-connections"
+        else
+            sudo install -o $(id -u) -g $(id -g) "$file" "$OUTDIR/network-connections"
+        fi
+    else
+        echo "# network-connections/$(basename "$file")"
+        if [ -r "$file" ]; then
+            cat "$file"
+        else
+            sudo cat "$file"
+        fi
+    fi
+}
+
+export_wifi_settings() {
+    if command -v >/dev/null 2>&1 nmcli; then
+        export_wifi_settings_nmcli
+    else
+        echo >&2 "Don't know how to export wifi settings"
+    fi
+}
+
+
+## main
+
+while getopts ':ho:' opt; do
+    case $opt in
+        (h) usage 0 ;;
+	(o) OUTDIR=$OPTARG ;;
+        (*) usage 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+export_user_settings
+export_wifi_settings
